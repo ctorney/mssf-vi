@@ -1,2 +1,1 @@
-# mssf-vi
-Multiscale step selection function with variational inference
+# Multiscale step selection function with variational inference
