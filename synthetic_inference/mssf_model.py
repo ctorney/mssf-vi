@@ -5,11 +5,52 @@ import tensorflow_probability as tfp
 tfd = tfp.distributions
 tfb = tfp.bijectors
 
+
+class BinaryTruePositives(tf.keras.metrics.Metric):
+
+      def __init__(self, name='binary_true_positives', tv=None, **kwargs):
+        super(BinaryTruePositives, self).__init__(name=name, **kwargs)
+        self.true_positives = self.add_weight(name='tp', initializer='zeros')
+        self.gradients = [self.add_weight(name=v.name,shape=v.shape, initializer='zeros') for v in tv]
+        self.decay = 1. - 1. / tf.cast(10, np.float32)
+
+      def update_state(self, gradients):
+
+        grad_inner_product = sum(tf.reduce_sum(g1 * g2)
+                                  for g1, g2 in zip(self.gradients, gradients))
+
+
+        # grad_inner_product = tf.reduce_sum(self.gradients[0][0] * gradients[0][0])
+        # tf.print('\nvalues that go into it\n', self.gradients[0][0], gradients[0][0], output_stream=sys.stdout)
+        self.true_positives.assign(self.decay*self.true_positives + (1-self.decay)*grad_inner_product)
+        # self.true_positives.assign(grad_inner_product)
+        # tf.print('\n', self.true_positives, grad_inner_product, output_stream=sys.stdout)
+        for g1, g2 in zip(self.gradients, gradients):
+          # tf.print('\n',g1, g2, output_stream=sys.stdout)
+          g1.assign(g2)
+        # # self.moving_product = (
+        #     # grad_inner_product + self.decay * (self.moving_product - grad_inner_product))
+
+        # self.previous_grads = gradients
+        # y_true = tf.cast(y_true, tf.bool)
+        # y_pred = tf.cast(y_pred, tf.bool)
+        #
+        # values = tf.logical_and(tf.equal(y_true, True), tf.equal(y_pred, True))
+        # values = tf.cast(values, self.dtype)
+        # if sample_weight is not None:
+        #   sample_weight = tf.cast(sample_weight, self.dtype)
+        #   sample_weight = tf.broadcast_to(sample_weight, values.shape)
+        #   values = tf.multiply(values, sample_weight)
+        # self.true_positives.assign_add(tf.reduce_sum(values))
+
+      def result(self):
+        return self.true_positives
+
 # A periodic version for working with simulated data on a torus
 
 
 class stepSelectionVI(tf.keras.Model):
-    def __init__(self, n_covars, cov_tensor, move_std=1.0, L=1.0,  prior_mean=None, prior_std=None, n_gh_points=4, n_vi_samples=4):
+    def __init__(self, n_covars, cov_tensor, move_std=1.0, L=1.0,  prior_mean=None, prior_std=None, n_gh_points=4, n_vi_samples=4, window_size=10):
 
         super().__init__()
 
@@ -57,6 +98,16 @@ class stepSelectionVI(tf.keras.Model):
         self.prior = tfp.distributions.MultivariateNormalDiag(
             loc=prior_mean, scale_diag=prior_std)
 
+        self.window_size = window_size
+
+        self.previous_grads = None
+        self.converged = False
+
+        # self.previous_grads = [tf.Variable(tf.ones_like(v), trainable=False)
+                               # for v in self.trainable_variables]
+        self.decay = 1. - 1. / tf.cast(self.window_size, np.float32)
+        self.convergence_tracker = BinaryTruePositives(name="conv", tv=self.trainable_variables)
+
     def call(self):
         return self.variational_posterior
 
@@ -74,8 +125,16 @@ class stepSelectionVI(tf.keras.Model):
         self.optimizer.apply_gradients(zip(gradients, trainable_vars))
 
         self.loss_tracker.update_state(loss)
+        self.convergence_tracker.update_state(gradients)
 
-        return {"loss": self.loss_tracker.result()}
+        # grad_inner_product = sum(tf.reduce_sum(g1 * g2)
+                                 # for g1, g2 in zip(self.previous_grads, gradients))
+        # # self.moving_product = (
+        #     # grad_inner_product + self.decay * (self.moving_product - grad_inner_product))
+
+        # self.previous_grads = gradients
+
+        return {"loss": self.loss_tracker.result(), "converged": self.convergence_tracker.result()}
 
     @tf.function
     def variational_loss(self, start_points_batch, end_points_batch, step_times_batch, kl_weight=1.0):
