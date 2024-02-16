@@ -5,18 +5,46 @@ import tensorflow_probability as tfp
 tfd = tfp.distributions
 tfb = tfp.bijectors
 
+class ConvergenceCallback(tf.keras.callbacks.Callback):
+    def __init__(self, threshold,eps=1e-6):
+        super().__init__()
+        self.previous_variables = None
+        self.eps = eps
+        self.threshold = threshold
+
+
+    def on_epoch_end(self, epoch, logs=None):
+        if self.previous_variables is None:
+            self.previous_variables = np.concatenate([v.numpy().flatten() for v in self.model.trainable_variables])
+            return
+
+        current_variables = np.concatenate([v.numpy().flatten() for v in self.model.trainable_variables])
+
+        diff = current_variables - self.previous_variables  # type: ignore
+        relative_diff = (np.abs(diff)) / (np.abs(self.previous_variables) + self.eps)
+
+        self.previous_variables = current_variables
+
+        norm = np.linalg.norm(relative_diff, np.inf)
+        print("\nConvergence diagnostic: ", norm, "\n")
+        if norm < self.threshold:
+            self.stopped_epoch = epoch
+            self.model.stop_training = True
+
+
+
 
 class BinaryTruePositives(tf.keras.metrics.Metric):
 
       def __init__(self, name='binary_true_positives', tv=None, **kwargs):
         super(BinaryTruePositives, self).__init__(name=name, **kwargs)
         self.true_positives = self.add_weight(name='tp', initializer='zeros')
-        self.gradients = [self.add_weight(name=v.name,shape=v.shape, initializer='zeros') for v in tv]
+        self.gradients = [self.add_weight(name=v.name,shape=v.shape, initializer='ones') for v in tv]
         self.decay = 1. - 1. / tf.cast(10, np.float32)
 
       def update_state(self, gradients):
 
-        grad_inner_product = sum(tf.reduce_sum(g1 * g2)
+        grad_inner_product = sum(tf.reduce_sum(g1 * g2)/(tf.norm(g1)*tf.norm(g2))
                                   for g1, g2 in zip(self.gradients, gradients))
 
 
@@ -50,7 +78,7 @@ class BinaryTruePositives(tf.keras.metrics.Metric):
 
 
 class stepSelectionVI(tf.keras.Model):
-    def __init__(self, n_covars, cov_tensor, move_std=1.0, L=1.0,  prior_mean=None, prior_std=None, n_gh_points=4, n_vi_samples=4, window_size=10):
+    def __init__(self, n_covars, cov_tensor, move_std=1.0, L=1.0,  prior_mean=None, prior_std=None, n_gh_points=4, n_gh_points_vi=4, window_size=10):
 
         super().__init__()
 
@@ -59,7 +87,7 @@ class stepSelectionVI(tf.keras.Model):
         self.n_covars = n_covars
         self.cov_tensor = cov_tensor
         self.n_gh_points = n_gh_points
-        self.n_vi_samples = n_vi_samples
+        self.n_gh_points_vi = n_gh_points_vi
 
         self.x_ref_min = [0., 0.]
         self.x_ref_max = [L, L]
@@ -70,23 +98,51 @@ class stepSelectionVI(tf.keras.Model):
 
         ghx, ghy = np.meshgrid(xi, xi)
         self.gh_grid = tf.convert_to_tensor(
-            np.stack([ghx, ghy], axis=2).astype(np.float32))
+            np.stack([ghx, ghy], axis=2).astype(np.float32)) 
 
         ghx, ghy = np.meshgrid(wi, wi)
 
-        self.grid_gh_weights = tf.convert_to_tensor(ghy, dtype=tf.float32)
-        self.gh_weights = tf.convert_to_tensor(wi, dtype=tf.float32)
+        self.grid_gh_weights = tf.convert_to_tensor(ghy, dtype=tf.float32) 
+        self.gh_weights = tf.convert_to_tensor(wi, dtype=tf.float32) 
+
+        # we have n_gh_points_vi in each dimension so the total number of points is n_gh_points_vi**n_covars
+        self.n_vi_points = n_gh_points_vi**n_covars
+        # set up the points for Gauss-Hermite quadrature for the variational inference
+        xi, wi = np.polynomial.hermite.hermgauss(n_gh_points_vi)
+
+        vi_grid = np.meshgrid(*[xi]*n_covars)
+        self.gh_grid_vi = tf.convert_to_tensor(
+            np.stack(vi_grid, axis=-1).astype(np.float32))
+
+        self.gh_grid_vi = tf.reshape(self.gh_grid_vi, (-1, n_covars)) * (2**0.5)
+        # ghx, ghy = np.meshgrid(wi, wi)
+        #
+        # n_gh_points_vi = 4
+        # n_covars = 3
+        # index_grid = np.meshgrid(*[np.arange(n_gh_points_vi)]*n_covars)
+
+        # index_grid = np.stack(index_grid, axis=-1).astype(np.float32)
+
+        weight_grid = np.meshgrid(*[wi]*n_covars)
+        weight_grid = np.stack(weight_grid, axis=-1).astype(np.float32) / (np.pi**0.5)
+        gh_grid_weights_vi = tf.convert_to_tensor(weight_grid, dtype=tf.float32)
+        gh_grid_weights_vi = tf.math.reduce_prod(gh_grid_weights_vi, axis=-1) 
+
+        self.gh_grid_weights_vi = tf.reshape(gh_grid_weights_vi, (-1)) 
+
+        #
+
 
         self.beta_mean = tf.Variable(np.zeros((n_covars)), dtype=tf.float32)
 
         self.beta_std = tfp.util.TransformedVariable(
-            [np.ones(n_covars, dtype=np.float32)], tfp.bijectors.Softplus(), dtype=tf.float32)
+            [np.ones(n_covars, dtype=np.float32)/10.0], tfp.bijectors.Softplus(), dtype=tf.float32)
 
         self.variational_posterior = tfp.distributions.MultivariateNormalDiag(
             loc=self.beta_mean, scale_diag=self.beta_std)
 
         self.move_std = tfp.util.TransformedVariable(
-            move_std, tfp.bijectors.Softplus(), dtype=tf.float32, trainable=False)
+            move_std, tfp.bijectors.Softplus(), dtype=tf.float32, trainable=True)
 
         # set default prior to be N(0,10)
         if prior_mean is None:
@@ -134,16 +190,17 @@ class stepSelectionVI(tf.keras.Model):
 
         # self.previous_grads = gradients
 
-        return {"loss": self.loss_tracker.result(), "converged": self.convergence_tracker.result()}
+        return {"loss": self.loss_tracker.result(), "converged": self.convergence_tracker.result(), "beta std": self.beta_std[0][0], "beta mean": self.beta_mean[0]}
 
     @tf.function
     def variational_loss(self, start_points_batch, end_points_batch, step_times_batch, kl_weight=1.0):
 
-        beta_samples = self.variational_posterior.sample(self.n_vi_samples)[
-            :, 0, :]
+        # beta_samples = self.variational_posterior.sample(self.n_vi_samples)[
+            # :, 0, :]
 
-        elogp = tf.reduce_mean(self.log_likelhood(
-            beta_samples, start_points_batch, end_points_batch, step_times_batch))
+        beta_values = self.beta_mean[None] + self.beta_std * self.gh_grid_vi 
+        log_likelihood = self.log_likelhood(beta_values, start_points_batch, end_points_batch, step_times_batch)
+        elogp = tf.reduce_sum(self.gh_grid_weights_vi*log_likelihood)
         penalty = kl_weight * \
             tfp.distributions.kl_divergence(
                 self.variational_posterior, self.prior)
