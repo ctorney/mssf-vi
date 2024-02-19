@@ -5,13 +5,13 @@ import tensorflow_probability as tfp
 tfd = tfp.distributions
 tfb = tfp.bijectors
 
+
 class ConvergenceCallback(tf.keras.callbacks.Callback):
-    def __init__(self, threshold,eps=1e-6):
+    def __init__(self, threshold, eps=1e-6):
         super().__init__()
         self.previous_variables = None
         self.eps = eps
         self.threshold = threshold
-
 
     def on_epoch_end(self, epoch, logs=None):
         if self.previous_variables is None:
@@ -20,7 +20,7 @@ class ConvergenceCallback(tf.keras.callbacks.Callback):
 
         current_variables = np.concatenate([v.numpy().flatten() for v in self.model.trainable_variables])
 
-        diff = current_variables - self.previous_variables 
+        diff = current_variables - self.previous_variables
         relative_diff = (np.abs(diff)) / (np.abs(self.previous_variables) + self.eps)
 
         self.previous_variables = current_variables
@@ -29,8 +29,6 @@ class ConvergenceCallback(tf.keras.callbacks.Callback):
         if norm < self.threshold:
             self.stopped_epoch = epoch
             self.model.stop_training = True
-
-
 
 
 # A periodic version for working with simulated data on a torus
@@ -54,12 +52,13 @@ class stepSelectionVI(tf.keras.Model):
         xi, wi = np.polynomial.hermite.hermgauss(n_gh_points)
 
         ghx, ghy = np.meshgrid(xi, xi)
-        self.gh_grid = tf.convert_to_tensor(np.stack([ghx, ghy], axis=2).astype(np.float32)) 
+        self.gh_grid = tf.convert_to_tensor(
+            np.stack([ghx, ghy], axis=2).astype(np.float32))
 
         ghx, ghy = np.meshgrid(wi, wi)
 
-        self.grid_gh_weights = tf.convert_to_tensor(ghy, dtype=tf.float32) 
-        self.gh_weights = tf.convert_to_tensor(wi, dtype=tf.float32) 
+        self.grid_gh_weights = tf.convert_to_tensor(ghy, dtype=tf.float32)
+        self.gh_weights = tf.convert_to_tensor(wi, dtype=tf.float32)
 
         # we have n_gh_points_vi in each dimension so the total number of points is n_gh_points_vi**n_covars
         self.n_vi_points = n_gh_points_vi**n_covars
@@ -73,11 +72,11 @@ class stepSelectionVI(tf.keras.Model):
         weight_grid = np.meshgrid(*[wi]*n_covars)
         weight_grid = np.stack(weight_grid, axis=-1).astype(np.float32) / (np.pi**0.5)
         gh_grid_weights_vi = tf.convert_to_tensor(weight_grid, dtype=tf.float32)
-        gh_grid_weights_vi = tf.math.reduce_prod(gh_grid_weights_vi, axis=-1) 
+        gh_grid_weights_vi = tf.math.reduce_prod(gh_grid_weights_vi, axis=-1)
 
-        self.gh_grid_weights_vi = tf.reshape(gh_grid_weights_vi, (-1)) 
+        self.gh_grid_weights_vi = tf.reshape(gh_grid_weights_vi, (-1))
 
-        # set the initial variational parameters - use zero mean and 0.1 std 
+        # set the initial variational parameters - use zero mean and 0.1 std
         self.beta_mean = tf.Variable(np.zeros((n_covars)), dtype=tf.float32)
 
         self.beta_std = tfp.util.TransformedVariable([np.ones(n_covars, dtype=np.float32)/10.0], tfp.bijectors.Softplus(), dtype=tf.float32)
@@ -113,18 +112,17 @@ class stepSelectionVI(tf.keras.Model):
 
         self.loss_tracker.update_state(loss)
 
-        return {"loss": self.loss_tracker.result()} 
+        return {"loss": self.loss_tracker.result()}
 
     @tf.function
     def variational_loss(self, start_points_batch, end_points_batch, step_times_batch, kl_weight=1.0):
 
-        beta_values = self.beta_mean[None] + self.beta_std * self.gh_grid_vi 
+        beta_values = self.beta_mean[None] + self.beta_std * self.gh_grid_vi
         log_likelihood = self.log_likelhood(beta_values, start_points_batch, end_points_batch, step_times_batch)
         elogp = tf.reduce_sum(self.gh_grid_weights_vi*log_likelihood)
         penalty = kl_weight * tfp.distributions.kl_divergence(self.variational_posterior, self.prior)
 
         return -elogp+penalty
-
 
     @tf.function
     def log_likelhood(self, beta_params, start_points, end_points, step_times):
@@ -167,15 +165,15 @@ class stepSelectionVI(tf.keras.Model):
 
         mid_points = mean_c + half_sigma*tf.expand_dims(self.gh_grid, 2)
 
-        inv_int_z = tf.math.pow(tf.map_fn(fn, tf.reshape( mid_points, (self.n_gh_points*self.n_gh_points, -1, 2)), parallel_iterations=1), -1)
+        inv_int_z = tf.math.pow(tf.map_fn(fn, tf.reshape(mid_points, (self.n_gh_points*self.n_gh_points, -1, 2)), parallel_iterations=1), -1)
 
         inv_int_z = tf.reshape(inv_int_z, (self.n_gh_points, self.n_gh_points, tf.shape(inv_int_z)[1], tf.shape(inv_int_z)[2]))
 
         # inv_int_z is now shape (ghx,ghy,num vi samples, num steps)
         ysum = tf.reduce_sum(inv_int_z*tf.reshape(self.grid_gh_weights, (self.n_gh_points, self.n_gh_points, 1, 1))/(np.pi**0.5), axis=0)
-        xsum = tf.reduce_sum( ysum*tf.reshape(self.gh_weights, (self.n_gh_points, 1, 1))/(np.pi**0.5), axis=0)
+        xsum = tf.reduce_sum(ysum*tf.reshape(self.gh_weights, (self.n_gh_points, 1, 1))/(np.pi**0.5), axis=0)
 
-        step_log_prob = tfp.distributions.Independent(tfp.distributions.Normal( loc=start_points, scale=(2**0.5)*sigmas), reinterpreted_batch_ndims=1).log_prob(end_points)
+        step_log_prob = tfp.distributions.Independent(tfp.distributions.Normal(loc=start_points, scale=(2**0.5)*sigmas), reinterpreted_batch_ndims=1).log_prob(end_points)
 
         log_prob = tf.math.log(rsf_points_end) + tf.math.log(xsum) + step_log_prob
         return tf.math.reduce_sum(log_prob, axis=-1)
