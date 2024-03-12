@@ -20,13 +20,12 @@ tfb = tfp.bijectors
 np.set_printoptions(suppress=True)
 sys.path.append(".")
 
-
 ##
 output_filename = "model_fit_results.csv"
 
 # write the header
 with open(output_filename, "w") as f:
-    f.write("nbObs, truebeta1, truebeta2, repeat, betamean1, betamean2, betastd1, betastd2\n")
+    f.write("nbObs, truebeta1, truebeta2, repeat, betamean1, betamean2, betastd1, betastd2, bcorr, z1, z2\n")
 
 
 def fit_dataset(nbObs, beta, repeat):
@@ -82,22 +81,21 @@ def fit_dataset(nbObs, beta, repeat):
 
     # Create the instance of the model and set up the training
 
-    ssf = stepSelectionVI(2, cov_tensor, move_std=2.00,
-                          L=50.0, n_gh_points=3, n_gh_points_vi=5)
+    ssf = stepSelectionVI(2, cov_tensor, move_std=2.00, L=50.0, n_gh_points=3, n_gh_points_vi=5)
 
     # set up the dataset and optimizer
     batch_size = 1000
-    train_dataset = tf.data.Dataset.from_tensor_slices(
-        (start_points, end_points, step_times))
-    train_dataset = train_dataset.batch(batch_size, drop_remainder=True)
+    train_dataset = tf.data.Dataset.from_tensor_slices((start_points, end_points, step_times))
 
+    train_dataset =  train_dataset.batch(batch_size, drop_remainder=True)
 
-    optimizer = tf.keras.optimizers.Adam(learning_rate=0.1, use_ema=True, ema_overwrite_frequency=10)
+    overwrite_ema = start_points.shape[0]//batch_size
+
+    optimizer = tf.keras.optimizers.SGD(learning_rate=0.1, clipvalue=1.0, use_ema=True, ema_overwrite_frequency=overwrite_ema)
     kl_weight = batch_size/start_points.shape[0]
     ssf.compile(optimizer=optimizer, loss_weights=kl_weight)
 
     convergence_callback = ConvergenceCallback(threshold=1e-3)
-
 
 ##
     max_epochs = 500
@@ -110,16 +108,18 @@ def fit_dataset(nbObs, beta, repeat):
     b1scale = ssf.beta_std.numpy()[0, 0]
     b2mean = ssf.beta_mean.numpy()[1]
     b2scale = ssf.beta_std.numpy()[0, 1]
+    print("Results: ", nbObs, beta, repeat, b1mean, b2mean, b1scale, b2scale)
+    ##
 
     with open(output_filename, "a") as f:
-        f.write(str(nbObs) + "," + str(beta[0][0]) + "," + str(beta[0][1]) + "," + str(
-            repeat) + "," + str(b1mean) + "," + str(b2mean) + "," + str(b1scale) + "," + str(b2scale) + "\n")
+        f.write(str(nbObs) + "," + str(beta[0][0]) + "," + str(beta[0][1]) + "," + str(repeat) + "," + str(b1mean) + "," \
+            + str(b2mean) + "," + str(b1scale) + "," + str(b2scale) + "," + str((beta[0][0]-b1mean)/b1scale) + "," + str((beta[0][1]-b2mean)/b2scale) + "\n")
 
 
 beta_list = [[[0.5, -0.8]], [[-1.5, -1.8]], [[-1.5, 1.8]], [[1.2, 1.8]]]
 
 for repeat in range(10):
-    for nbObs in [10001, 100001, 1000001]:
+    for nbObs in [1000001, 100001, 10001]:
         for beta in beta_list:
             fit_dataset(nbObs, beta, repeat)
             print("Finished: ", nbObs, beta, repeat)
