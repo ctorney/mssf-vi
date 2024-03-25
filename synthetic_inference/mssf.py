@@ -5,13 +5,13 @@ import tensorflow_probability as tfp
 tfd = tfp.distributions
 tfb = tfp.bijectors
 
-
-class ConvergenceCallback(tf.keras.callbacks.Callback):
-    def __init__(self, threshold, eps=1e-6):
+class ConvergenceCallback2(tf.keras.callbacks.Callback):
+    def __init__(self, threshold, eps=1e-6, patience=1):
         super().__init__()
         self.previous_variables = None
         self.eps = eps
         self.threshold = threshold
+        self.patience = patience
 
     def on_epoch_end(self, epoch, logs=None):
         if self.previous_variables is None:
@@ -27,6 +27,35 @@ class ConvergenceCallback(tf.keras.callbacks.Callback):
 
         norm = np.linalg.norm(relative_diff, np.inf)
         if norm < self.threshold:
+            self.patience -= 1
+        if self.patience == 0:
+            self.stopped_epoch = epoch
+            self.model.stop_training = True
+
+class ConvergenceCallback(tf.keras.callbacks.Callback):
+    def __init__(self, threshold, eps=1e-6):
+        super().__init__()
+        self.previous_variables = None
+        self.eps = eps
+        self.threshold = threshold
+
+    def on_epoch_end(self, epoch, logs=None):
+        if self.previous_variables is None:
+            # self.previous_variables = np.concatenate([v.numpy().flatten() for v in self.model.trainable_variables])
+            self.previous_variables = [self.model.beta_mean.numpy(), self.model.beta_std.numpy()]
+            return
+
+        current_variables = [self.model.beta_mean.numpy(), self.model.beta_std.numpy()]
+
+        previous_distribution = tfp.distributions.MultivariateNormalDiag(loc=self.previous_variables[0], scale_diag=self.previous_variables[1])
+        current_distribution = tfp.distributions.MultivariateNormalDiag(loc=current_variables[0], scale_diag=current_variables[1])
+
+        kl_div = tfp.distributions.kl_divergence(current_distribution, previous_distribution).numpy()
+
+        self.previous_variables = current_variables
+
+        print("KL divergence: ", kl_div)
+        if kl_div < self.threshold:
             self.stopped_epoch = epoch
             self.model.stop_training = True
 
@@ -79,7 +108,7 @@ class stepSelectionVI(tf.keras.Model):
         # set the initial variational parameters - use zero mean and 0.1 std
         self.beta_mean = tf.Variable(np.zeros((n_covars)), dtype=tf.float32)
 
-        self.beta_std = tfp.util.TransformedVariable([np.ones(n_covars, dtype=np.float32)/10.0], tfp.bijectors.Softplus(), dtype=tf.float32)
+        self.beta_std = tfp.util.TransformedVariable([np.ones(n_covars, dtype=np.float32)/1.0], tfp.bijectors.Exp(), dtype=tf.float32)
 
         self.variational_posterior = tfp.distributions.MultivariateNormalDiag(loc=self.beta_mean, scale_diag=self.beta_std)
 
@@ -94,6 +123,11 @@ class stepSelectionVI(tf.keras.Model):
         prior_std = tf.constant(prior_std, dtype=tf.float32)
         self.prior = tfp.distributions.MultivariateNormalDiag(loc=prior_mean, scale_diag=prior_std)
 
+
+    @property
+    def trainable_variables(self):
+        return [self.beta_mean, self.beta_std.trainable_variables[0], self.move_std.trainable_variables[0]]
+
     def call(self):
         return self.variational_posterior
 
@@ -105,14 +139,16 @@ class stepSelectionVI(tf.keras.Model):
         with tf.GradientTape() as tape:
             loss = self.variational_loss(x, y, z, kl_weight)
 
-        trainable_vars = self.trainable_variables
+        trainable_vars = [self.beta_mean, self.beta_std.trainable_variables[0], self.move_std.trainable_variables[0]]
         gradients = tape.gradient(loss, trainable_vars)
-
-        self.optimizer.apply_gradients(zip(gradients, trainable_vars))
+        # inv_fisher_matrix = [tf.linalg.diag_part(self.beta_std)[0]**2, 0.5*tf.ones_like(self.beta_std.trainable_variables[0]), tf.ones_like(self.move_std)]
+        inv_fisher_matrix = [self.beta_std[0]**2, 0.5*tf.ones_like(self.beta_std.trainable_variables[0]), tf.ones_like(self.move_std)]
+        natural_gradients = [g*f for g, f in zip(gradients, inv_fisher_matrix)]
+        self.optimizer.apply_gradients(zip(natural_gradients, trainable_vars))
 
         self.loss_tracker.update_state(loss)
 
-        return {"loss": self.loss_tracker.result()}
+        return {"loss": self.loss_tracker.result(),"beta_mean": self.beta_mean[0], "beta_std": self.beta_std[0,0], "move_std": self.move_std}
 
     @tf.function
     def variational_loss(self, start_points_batch, end_points_batch, step_times_batch, kl_weight=1.0):

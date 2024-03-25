@@ -70,8 +70,8 @@ def onestep(xyt, stdt, cov_field, beta_values):
     return locations
 
 
-for nbObs in [10001, 100001, 1000001]:
-    for beta in [[[-1.5, -1.8]], [[0.5, -0.8]], [[-1.5, 1.8]], [[1.2, 1.8]]]:
+for nbObs in [1000001, 100001, 10001]:
+    for beta in [[[1.2, 1.8]], [[0.5, -0.8]], [[-1.5, 1.8]], [[-1.5, -1.8]]]:
 
         samples = gp1.sample(nrepeat)
         cov1 = samples.numpy().reshape(nrepeat, 51, 51)
@@ -82,7 +82,7 @@ for nbObs in [10001, 100001, 1000001]:
         cov_cube = np.stack((cov1, cov2), axis=1)
 
         xy0 = [25, 25]  # Initial location
-        npts = 100  # Number of potential endpoints to sample at each time step
+        npts = 1000  # Number of potential endpoints to sample at each time step
         xy1 = np.zeros((nbObs, nrepeat, 2))
         xy1[0] = xy0
         x_min = [0., 0.]

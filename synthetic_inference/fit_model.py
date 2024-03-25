@@ -86,8 +86,10 @@ def fit_dataset(nbObs, beta, repeat):
     # set up the dataset and optimizer
     batch_size = 1000
     train_dataset = tf.data.Dataset.from_tensor_slices((start_points, end_points, step_times))
-
-    train_dataset =  train_dataset.batch(batch_size, drop_remainder=True)
+    
+    dataset_repeat = int(1e6/(nbObs-1))
+    # train_dataset =  train_dataset.batch(batch_size, drop_remainder=True)
+    train_dataset = train_dataset.shuffle(buffer_size=100000).batch(batch_size, drop_remainder=True).repeat(dataset_repeat)
 
     overwrite_ema = start_points.shape[0]//batch_size
 
@@ -95,7 +97,8 @@ def fit_dataset(nbObs, beta, repeat):
     kl_weight = batch_size/start_points.shape[0]
     ssf.compile(optimizer=optimizer, loss_weights=kl_weight)
 
-    convergence_callback = ConvergenceCallback(threshold=1e-3)
+
+    convergence_callback = ConvergenceCallback(threshold=1e-2)
 
 ##
     max_epochs = 500
@@ -119,7 +122,7 @@ def fit_dataset(nbObs, beta, repeat):
 beta_list = [[[0.5, -0.8]], [[-1.5, -1.8]], [[-1.5, 1.8]], [[1.2, 1.8]]]
 
 for repeat in range(10):
-    for nbObs in [1000001, 100001, 10001]:
+    for nbObs in [10001, 100001, 1000001]:
         for beta in beta_list:
             fit_dataset(nbObs, beta, repeat)
             print("Finished: ", nbObs, beta, repeat)

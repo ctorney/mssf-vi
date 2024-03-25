@@ -10,7 +10,7 @@ import sys
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 from time import time
-# import arviz as az
+import arviz as az
 import tensorflow as tf
 import tensorflow_probability as tfp
 tfd = tfp.distributions
@@ -23,7 +23,7 @@ output_filename = "model_hmc_results.csv"
 
 # write the header
 with open(output_filename, "w") as f:
-    f.write("nbObs, truebeta1, truebeta2, betamean1, betamean2, betastd1, betastd2\n")
+    f.write("nbObs, truebeta1, truebeta2, betamean1, betamean2, betastd1, betastd2, beta1ess, beta2ess, beta1rhat, beta2rhat\n")
 
 
 def fit_dataset(nbObs, beta):
@@ -88,13 +88,17 @@ def fit_dataset(nbObs, beta):
     num_results=int(1e4) 
     num_burnin_steps=int(1e3)
     
-    adaptive_hmc = tfp.mcmc.SimpleStepSizeAdaptation(tfp.mcmc.HamiltonianMonteCarlo(target_log_prob_fn=target_log_prob,
-                                                     num_leapfrog_steps=3,step_size=0.1),
-                                                     num_adaptation_steps=int(num_burnin_steps * 0.8))
+    adaptive_nuts = tfp.mcmc.DualAveragingStepSizeAdaptation(tfp.mcmc.NoUTurnSampler(
+        target_log_prob_fn=target_log_prob,
+        step_size=0.1), num_adaptation_steps=int(num_burnin_steps * 0.8))
+
+    # adaptive_hmc = tfp.mcmc.SimpleStepSizeAdaptation(tfp.mcmc.HamiltonianMonteCarlo(target_log_prob_fn=target_log_prob,
+    #                                                  num_leapfrog_steps=5,step_size=0.001),
+    #                                                  num_adaptation_steps=int(num_burnin_steps * 0.8))
 
     # add a progress bar
     adaptive_hmc = tfp.experimental.mcmc.WithReductions(
-        adaptive_hmc,
+        adaptive_nuts,
         reducer=tfp.experimental.mcmc.ProgressBarReducer(
             num_results=num_results + num_burnin_steps,
         )
@@ -118,6 +122,24 @@ def fit_dataset(nbObs, beta):
     # Set number of chains
     n_chain=4
     samples_return=np.array([run_chain() for i in range(n_chain)])
+##
+
+    var_name = ['b1', 'b2']
+    posterior = {k:samples_return[...,v] for v, k in enumerate(var_name)}
+
+    az_trace = az.from_dict(posterior=posterior)
+
+    ess = az.ess(az_trace)
+    b1ess = ess['b1'].data[0]
+    b2ess = ess['b2'].data[0]
+
+    rhat = az.rhat(az_trace)
+    b1rhat = rhat['b1'].data[0]
+    b2rhat = rhat['b2'].data[0]
+
+
+
+    ##
 
     filename = "hmc_samples_" + str(nbObs) + "_b1_" + str(beta[0][0]) + "_b2_" + str(beta[0][1]) + ".npy"
     np.save(filename, samples_return)
@@ -132,11 +154,14 @@ def fit_dataset(nbObs, beta):
     b2scale=tf.math.reduce_std(hmc_sample,axis=0).numpy()[1]
 
     with open(output_filename, "a") as f:
-        f.write(str(nbObs) + "," + str(beta[0][0]) + "," + str(beta[0][1]) + "," + "," +
-                str(b1mean) + "," + str(b2mean) + "," + str(b1scale) + "," + str(b2scale) + "\n")
+        f.write(str(nbObs) + "," + str(beta[0][0]) + "," + str(beta[0][1]) + "," + 
+                str(b1mean) + "," + str(b2mean) + "," + str(b1scale) + "," + str(b2scale) + "," +
+                str(b1ess) + "," + str(b2ess) + "," + str(b1rhat) + "," + str(b2rhat) + "\n")
+##
+beta_list = [[[-1.5, 1.8]], [[-1.5, -1.8]], [[0.5, -0.8]], [[1.2, 1.8]]]
 
-beta_list = [[[0.5, -0.8]], [[-1.5, -1.8]], [[-1.5, 1.8]], [[1.2, 1.8]]]
 
+##
 for beta in beta_list:
     fit_dataset(10001, beta)
     print("Finished: ", beta)
