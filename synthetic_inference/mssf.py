@@ -5,33 +5,6 @@ import tensorflow_probability as tfp
 tfd = tfp.distributions
 tfb = tfp.bijectors
 
-class ConvergenceCallback2(tf.keras.callbacks.Callback):
-    def __init__(self, threshold, eps=1e-6, patience=1):
-        super().__init__()
-        self.previous_variables = None
-        self.eps = eps
-        self.threshold = threshold
-        self.patience = patience
-
-    def on_epoch_end(self, epoch, logs=None):
-        if self.previous_variables is None:
-            self.previous_variables = np.concatenate([v.numpy().flatten() for v in self.model.trainable_variables])
-            return
-
-        current_variables = np.concatenate([v.numpy().flatten() for v in self.model.trainable_variables])
-
-        diff = current_variables - self.previous_variables
-        relative_diff = (np.abs(diff)) / (np.abs(self.previous_variables) + self.eps)
-
-        self.previous_variables = current_variables
-
-        norm = np.linalg.norm(relative_diff, np.inf)
-        if norm < self.threshold:
-            self.patience -= 1
-        if self.patience == 0:
-            self.stopped_epoch = epoch
-            self.model.stop_training = True
-
 class ConvergenceCallback(tf.keras.callbacks.Callback):
     def __init__(self, threshold, eps=1e-6):
         super().__init__()
